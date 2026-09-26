@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import io
 import sys
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable, Iterator
 
 import a2wsgi
 import httpx2
@@ -109,6 +109,41 @@ async def test_wsgi_exc_info(wsgi_middleware: Callable) -> None:
         response = await client.get("/")
     assert response.status_code == 500
     assert response.text == "Internal Server Error"
+
+
+@pytest.mark.anyio
+async def test_wsgi_closes_response_iterable() -> None:
+    class CloseableResponse:
+        def __init__(self, raise_on_iteration: bool) -> None:
+            self.raise_on_iteration = raise_on_iteration
+            self.closed = False
+
+        def __iter__(self) -> Iterator[bytes]:
+            yield b"Hello World!"
+            if self.raise_on_iteration:
+                raise RuntimeError("Something went wrong")
+
+        def close(self) -> None:
+            self.closed = True
+
+    for raise_on_iteration in (False, True):
+        response_body = CloseableResponse(raise_on_iteration)
+
+        def app(environ: Environ, start_response: StartResponse) -> CloseableResponse:
+            start_response("200 OK", [("Content-Length", "12")], None)
+            return response_body
+
+        middleware: Callable = wsgi._WSGIMiddleware(app)
+        transport = httpx2.ASGITransport(middleware)
+        async with httpx2.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            if raise_on_iteration:
+                with pytest.raises(RuntimeError, match="Something went wrong"):
+                    await client.get("/")
+            else:
+                response = await client.get("/")
+                assert response.content == b"Hello World!"
+
+        assert response_body.closed
 
 
 def test_build_environ_encoding() -> None:
