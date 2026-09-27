@@ -7,6 +7,7 @@ import sys
 import warnings
 from collections import deque
 from collections.abc import Iterable
+from typing import cast
 
 from uvicorn._types import (
     ASGIReceiveCallable,
@@ -175,14 +176,20 @@ class WSGIResponder:
             self.loop.call_soon_threadsafe(self.send_event.set)
 
     def wsgi(self, environ: Environ, start_response: StartResponse) -> None:
-        for chunk in self.app(environ, start_response):  # type: ignore
-            response_body: HTTPResponseBodyEvent = {
-                "type": "http.response.body",
-                "body": chunk,
-                "more_body": True,
-            }
-            self.send_queue.append(response_body)
-            self.loop.call_soon_threadsafe(self.send_event.set)
+        result = cast(Iterable[bytes], self.app(environ, start_response))
+        try:
+            for chunk in result:
+                response_body: HTTPResponseBodyEvent = {
+                    "type": "http.response.body",
+                    "body": chunk,
+                    "more_body": True,
+                }
+                self.send_queue.append(response_body)
+                self.loop.call_soon_threadsafe(self.send_event.set)
+        finally:
+            close = getattr(result, "close", None)
+            if close is not None:
+                close()
 
         empty_body: HTTPResponseBodyEvent = {
             "type": "http.response.body",

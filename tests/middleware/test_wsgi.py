@@ -111,6 +111,32 @@ async def test_wsgi_exc_info(wsgi_middleware: Callable) -> None:
     assert response.text == "Internal Server Error"
 
 
+@pytest.mark.anyio
+async def test_wsgi_closes_response_iterable() -> None:
+    class ResponseIterable:
+        closed = False
+
+        def __iter__(self):
+            yield b"Hello World!\n"
+
+        def close(self) -> None:
+            self.closed = True
+
+    response_iterable = ResponseIterable()
+
+    def app(environ: Environ, start_response: StartResponse) -> ResponseIterable:
+        start_response("200 OK", [], None)
+        return response_iterable
+
+    middleware: Callable = wsgi._WSGIMiddleware(app)
+    transport = httpx2.ASGITransport(middleware)
+    async with httpx2.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/")
+
+    assert response.text == "Hello World!\n"
+    assert response_iterable.closed
+
+
 def test_build_environ_encoding() -> None:
     scope: HTTPScope = {
         "asgi": {"version": "3.0", "spec_version": "2.0"},
